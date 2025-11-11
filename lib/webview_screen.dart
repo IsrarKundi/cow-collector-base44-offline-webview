@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dart:async';
@@ -15,12 +16,15 @@ class WebViewPageState extends State<WebViewPage> {
   late final PullToRefreshController _pullToRefreshController;
   bool _hasInternet = true;
   bool _isLoading = true;
+  double _progress = 0;
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
   final String _mainUrl = 'https://cow-collector-22f05856.base44.app';
+  String _currentUrl = '';
 
   @override
   void initState() {
     super.initState();
+    _currentUrl = _mainUrl;
     _initializeWebView();
     _initConnectivity();
   }
@@ -101,6 +105,20 @@ class WebViewPageState extends State<WebViewPage> {
     super.dispose();
   }
 
+  // Check if we're on the main/home page
+  bool _isOnMainPage() {
+    if (_currentUrl.isEmpty) return true;
+    
+    final uri = Uri.parse(_currentUrl);
+    final path = uri.path;
+    
+    // Consider these as "main page" where back should exit app
+    return path == '/' || 
+           path == '' || 
+           path == '/home' ||
+           _currentUrl == _mainUrl;
+  }
+
   // Legacy method kept for reference
   // ignore: unused_element
   Future<bool> _onWillPop() async {
@@ -117,25 +135,66 @@ class WebViewPageState extends State<WebViewPage> {
       canPop: false,
       onPopInvokedWithResult: (bool didPop, Object? result) async {
         if (didPop) return;
-        final canGoBack = await _controller?.canGoBack() ?? false;
-        if (canGoBack) {
-          _controller?.goBack();
+        
+        // Check if we're on the main page
+        if (_isOnMainPage()) {
+          // Show exit confirmation dialog
+          final shouldExit = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Exit App?'),
+              content: const Text('Do you want to exit the app?'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Exit'),
+                ),
+              ],
+            ),
+          );
+          
+          if (shouldExit == true && mounted) {
+            SystemNavigator.pop();
+          }
         } else {
-          if (mounted) {
-            Navigator.of(context).pop();
+          // Not on main page, try to go back in WebView
+          final canGoBack = await _controller?.canGoBack() ?? false;
+          if (canGoBack) {
+            _controller?.goBack();
+          } else {
+            // Fallback: load main URL
+            _controller?.loadUrl(
+              urlRequest: URLRequest(url: WebUri(_mainUrl)),
+            );
           }
         }
       },
       child: Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
-          child: _isLoading
-              ? const Center(
-                  child: CircularProgressIndicator(
-                    color: Colors.purple,
-                  ),
-                )
-              : InAppWebView(
+          child: Column(
+            children: [
+              // Loading Progress Indicator
+              if (_progress < 1.0)
+                LinearProgressIndicator(
+                  value: _progress,
+                  backgroundColor: Colors.grey[200],
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.purple),
+                  minHeight: 3,
+                ),
+              // WebView Content
+              Expanded(
+                child: _isLoading
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                          color: Colors.purple,
+                        ),
+                      )
+                    : InAppWebView(
                   initialUrlRequest: URLRequest(
                     url: WebUri(_mainUrl),
                   ),
@@ -202,10 +261,16 @@ class WebViewPageState extends State<WebViewPage> {
                     return NavigationActionPolicy.ALLOW;
                   },
                   onLoadStart: (controller, url) {
+                    setState(() {
+                      _currentUrl = url?.toString() ?? _mainUrl;
+                    });
                     debugPrint('Page started loading: $url');
                   },
                   onLoadStop: (controller, url) async {
                     _pullToRefreshController.endRefreshing();
+                    setState(() {
+                      _currentUrl = url?.toString() ?? _mainUrl;
+                    });
                     debugPrint('Page finished loading: $url');
                   },
                   onReceivedError: (controller, request, error) {
@@ -216,11 +281,17 @@ class WebViewPageState extends State<WebViewPage> {
                     debugPrint('HTTP error: ${response.statusCode}');
                   },
                   onProgressChanged: (controller, progress) {
+                    setState(() {
+                      _progress = progress / 100;
+                    });
                     if (progress == 100) {
                       _pullToRefreshController.endRefreshing();
                     }
                   },
                 ),
+              ),
+            ],
+          ),
         ),
       ),
     );
