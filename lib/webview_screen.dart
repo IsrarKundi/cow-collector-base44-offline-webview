@@ -105,18 +105,26 @@ class WebViewPageState extends State<WebViewPage> {
     super.dispose();
   }
 
-  // Check if we're on the main/home page
+  // Check if we're on the main/home page (Game page)
   bool _isOnMainPage() {
     if (_currentUrl.isEmpty) return true;
     
     final uri = Uri.parse(_currentUrl);
     final path = uri.path;
     
-    // Consider these as "main page" where back should exit app
-    return path == '/' || 
+    debugPrint('Checking if on main page...');
+    debugPrint('Current URL: $_currentUrl');
+    debugPrint('Parsed path: $path');
+    
+    // Only consider home/game page as "main page" where back should exit app
+    // Any other route should navigate back to home instead
+    final isMain = path == '/' || 
            path == '' || 
-           path == '/home' ||
+           path == '/Game' ||
            _currentUrl == _mainUrl;
+    
+    debugPrint('Is main page: $isMain');
+    return isMain;
   }
 
   // Legacy method kept for reference
@@ -135,6 +143,16 @@ class WebViewPageState extends State<WebViewPage> {
       canPop: false,
       onPopInvokedWithResult: (bool didPop, Object? result) async {
         if (didPop) return;
+        
+        // Get the current URL from the WebView
+        final currentWebUrl = await _controller?.getUrl();
+        if (currentWebUrl != null) {
+          setState(() {
+            _currentUrl = currentWebUrl.toString();
+          });
+          debugPrint('Back button pressed - Current URL: $_currentUrl');
+          debugPrint('Is on main page: ${_isOnMainPage()}');
+        }
         
         // Check if we're on the main page
         if (_isOnMainPage()) {
@@ -166,7 +184,7 @@ class WebViewPageState extends State<WebViewPage> {
           if (canGoBack) {
             _controller?.goBack();
           } else {
-            // Fallback: load main URL
+            // Fallback: load main URL (go back to home/game page)
             _controller?.loadUrl(
               urlRequest: URLRequest(url: WebUri(_mainUrl)),
             );
@@ -265,6 +283,7 @@ class WebViewPageState extends State<WebViewPage> {
                       _currentUrl = url?.toString() ?? _mainUrl;
                     });
                     debugPrint('Page started loading: $url');
+                    debugPrint('Current URL set to: $_currentUrl');
                   },
                   onLoadStop: (controller, url) async {
                     _pullToRefreshController.endRefreshing();
@@ -272,6 +291,7 @@ class WebViewPageState extends State<WebViewPage> {
                       _currentUrl = url?.toString() ?? _mainUrl;
                     });
                     debugPrint('Page finished loading: $url');
+                    debugPrint('Current URL set to: $_currentUrl');
                   },
                   onReceivedError: (controller, request, error) {
                     _pullToRefreshController.endRefreshing();
