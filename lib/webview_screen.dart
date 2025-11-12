@@ -20,6 +20,7 @@ class WebViewPageState extends State<WebViewPage> {
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
   final String _mainUrl = 'https://cow-collector-22f05856.base44.app';
   String _currentUrl = '';
+  CacheMode _initialCacheMode = CacheMode.LOAD_DEFAULT;
 
   @override
   void initState() {
@@ -37,6 +38,7 @@ class WebViewPageState extends State<WebViewPage> {
       ),
       onRefresh: () async {
         if (_hasInternet) {
+          // Just reload - don't clear cache to preserve user data and session
           await _controller?.reload();
         } else {
           _pullToRefreshController.endRefreshing();
@@ -57,9 +59,15 @@ class WebViewPageState extends State<WebViewPage> {
   Future<void> _initConnectivity() async {
     final connectivity = Connectivity();
     final initialStatus = await connectivity.checkConnectivity();
+    final hasInternet = initialStatus.isNotEmpty &&
+        !initialStatus.contains(ConnectivityResult.none);
+    
     setState(() {
-      _hasInternet = initialStatus.isNotEmpty &&
-          !initialStatus.contains(ConnectivityResult.none);
+      _hasInternet = hasInternet;
+      // Set initial cache mode based on connectivity
+      _initialCacheMode = hasInternet 
+          ? CacheMode.LOAD_DEFAULT 
+          : CacheMode.LOAD_CACHE_ELSE_NETWORK;
       _isLoading = false;
     });
 
@@ -72,8 +80,17 @@ class WebViewPageState extends State<WebViewPage> {
           _hasInternet = hasInternet;
         });
         if (hasInternet) {
-          // When connection is restored, reload to get fresh content
-          _controller?.reload();
+          // When connection is restored, switch back to normal browser mode and reload
+          setState(() {
+            _initialCacheMode = CacheMode.LOAD_DEFAULT;
+          });
+          _controller?.setSettings(
+            settings: InAppWebViewSettings(
+              cacheMode: CacheMode.LOAD_DEFAULT,
+            ),
+          ).then((_) {
+            _controller?.reload();
+          });
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -103,6 +120,23 @@ class WebViewPageState extends State<WebViewPage> {
   void dispose() {
     _connectivitySubscription.cancel();
     super.dispose();
+  }
+
+  // Helper method to clear cache and reload (can be called manually if needed)
+  // Note: This clears HTTP cache but preserves user data (cookies, localStorage, etc.)
+  Future<void> _clearCacheAndReload() async {
+    // Clear HTTP cache only, not user data
+    await _controller?.clearCache();
+    await _controller?.reload();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cache cleared - Loading fresh content'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.blue,
+        ),
+      );
+    }
   }
 
   // Check if we're on the main/home page (Game page)
@@ -225,6 +259,8 @@ class WebViewPageState extends State<WebViewPage> {
                     cacheEnabled: true,
                     clearCache: false,
                     useOnDownloadStart: true,
+                    // CRITICAL: Ensure credentials (cookies, auth headers) are sent with API requests
+                    incognito: false,
                     userAgent:
                         'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
                     // Android specific
@@ -232,11 +268,18 @@ class WebViewPageState extends State<WebViewPage> {
                     domStorageEnabled: true,
                     databaseEnabled: true,
                     mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                    // CRITICAL: This makes the WebView use cache when offline
-                    cacheMode: CacheMode.LOAD_CACHE_ELSE_NETWORK,
+                    // Dynamic cache mode: LOAD_DEFAULT when online, LOAD_CACHE_ELSE_NETWORK when offline
+                    cacheMode: _initialCacheMode,
                     // Allow content access for cached resources
                     allowContentAccess: true,
                     allowFileAccess: true,
+                    // CRITICAL: Enable third-party cookies for authentication/session persistence
+                    thirdPartyCookiesEnabled: true,
+                    // Enable cookies for cross-origin requests (Supabase API calls)
+                    sharedCookiesEnabled: true,
+                    // Enable secure access modes for IndexedDB and Web SQL
+                    allowFileAccessFromFileURLs: true,
+                    allowUniversalAccessFromFileURLs: true,
                     // iOS specific
                     allowsInlineMediaPlayback: true,
                     allowsBackForwardNavigationGestures: true,
@@ -296,6 +339,23 @@ class WebViewPageState extends State<WebViewPage> {
                   onReceivedError: (controller, request, error) {
                     _pullToRefreshController.endRefreshing();
                     debugPrint('Received error: ${error.description}');
+                    
+                    // If error is due to no internet and we're not already in offline mode
+                    if ((!_hasInternet || error.type == WebResourceErrorType.HOST_LOOKUP) 
+                        && _initialCacheMode != CacheMode.LOAD_CACHE_ELSE_NETWORK) {
+                      debugPrint('Switching to offline mode and reloading from cache');
+                      // Change cache mode to use cache
+                      setState(() {
+                        _initialCacheMode = CacheMode.LOAD_CACHE_ELSE_NETWORK;
+                      });
+                      controller.setSettings(
+                        settings: InAppWebViewSettings(
+                          cacheMode: CacheMode.LOAD_CACHE_ELSE_NETWORK,
+                        ),
+                      ).then((_) {
+                        controller.reload();
+                      });
+                    }
                   },
                   onReceivedHttpError: (controller, request, response) {
                     debugPrint('HTTP error: ${response.statusCode}');
